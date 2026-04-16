@@ -1,0 +1,5 @@
+name,type,price,currency,expertise,location,availability,portfolio_summary,references,notes
+Atlas AI Studio,Agency,22000,USD,"LLM orchestration; MCP; LangChain; evaluation pipelines",Morocco,2026-05-15,"Built procurement and support agents for mid-market teams","2 enterprise references","Strong timezone overlap and structured delivery process"
+Northstar Automation,Freelancer,18000,USD,"Python; LangGraph; scoring systems; dashboards",Remote,2026-06-10,"Delivered agent workflow prototypes and analytics tooling","1 startup reference","Excellent price but starts after preferred date"
+VectorOps Labs,Agency,31000,USD,"MLOps; vector databases; OpenAI integrations; MCP",United States,2026-05-20,"Built production RAG and provider matching systems","3 references","Over budget for v1"
+Prism Data Collective,Agency,24000,USD,"LLM orchestration; MCP; data normalization; CI/CD",Europe,2026-05-25,"Implemented vendor selection and compliance review workflows","2 references","Balanced profile with strong DevOps maturity"

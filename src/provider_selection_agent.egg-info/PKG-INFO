@@ -1,0 +1,94 @@
+Metadata-Version: 2.4
+Name: provider-selection-agent
+Version: 0.1.0
+Summary: CLI agent for comparing service providers with deterministic scoring and LLM-assisted recommendation drafts.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: langgraph>=0.2.60
+Requires-Dist: langchain>=0.3.0
+Requires-Dist: langchain-openai>=0.2.0
+Requires-Dist: pydantic>=2.7
+Requires-Dist: typer>=0.12
+Requires-Dist: pandas>=2.2
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: jinja2>=3.1
+Requires-Dist: rich>=13.7
+Requires-Dist: tenacity>=8.3
+Requires-Dist: chromadb>=0.5
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+Requires-Dist: types-PyYAML>=6.0; extra == "dev"
+
+# Service Provider Selection Agent
+
+An auditable CLI agent for comparing freelancers, agencies, and other service providers. It combines deterministic multi-criteria scoring with an optional LangGraph/LangChain LLM synthesis step to produce a draft recommendation report for human review.
+
+## Quick Start
+
+```bash
+pip install -e ".[dev]"
+compare-providers --providers examples/providers.csv --criteria config/criteria.yaml --brief examples/project_brief.md --out reports/run_001
+```
+
+The command writes:
+
+- `recommendation.md` - stakeholder-facing draft recommendation.
+- `scores.json` - ranked scores and component explanations.
+- `audit.json` - inputs, filters, weights, exclusions, and LLM evidence references.
+- `approval_required.txt` - explicit human approval checkpoint.
+
+The agent works without `OPENAI_API_KEY`; in that mode it emits a deterministic score-only synthesis. With an API key, the LLM can summarize strengths, weaknesses, and tradeoffs, but it cannot change numeric scores.
+
+## Environment
+
+See `.env.example`:
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`, default `gpt-4.1`
+- `LOG_LEVEL`, default `INFO`
+- `VECTOR_DB_PATH`, default `.local/vector_store`
+- `ENABLE_WEB_SEARCH`, default `false`
+- `MCP_SERVER_URL`, optional future connector endpoint
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A["CLI: compare-providers"] --> B["Load Input Files"]
+    B --> C["Validate + Normalize Profiles"]
+    C --> D["Apply Hard Filters"]
+    D --> E["Weighted Scoring Engine"]
+    E --> F["LangGraph Analysis Workflow"]
+    F --> G["LLM Strengths / Weaknesses Synthesis"]
+    G --> H["Recommendation Draft"]
+    H --> I["Human Approval Gate"]
+    I --> J["Markdown + JSON Reports"]
+```
+
+## Input Files
+
+Provider files may be CSV or JSON. Required columns/keys:
+
+`name`, `type`, `price`, `currency`, `expertise`, `location`, `availability`, `portfolio_summary`, `references`, `notes`
+
+The criteria YAML controls weights, hard filters, scoring penalties, and report settings.
+
+## Guardrails
+
+- Hard filters are deterministic and explicit.
+- Scoring is calculated outside the LLM.
+- LLM output must match a Pydantic schema.
+- Referenced evidence must come from provider fields or the synthesis is discarded.
+- Tool or LLM failure falls back to a score-only draft.
+- Every report is marked `DRAFT_PENDING_APPROVAL`.
+
+## Development
+
+```bash
+ruff check .
+mypy src
+pytest --cov=provider_selection_agent
+```

@@ -1,0 +1,28 @@
+weights:
+  price: 0.30
+  expertise: 0.35
+  location: 0.15
+  availability: 0.20
+
+hard_filters:
+  max_budget: 25000
+  currency: USD
+  required_expertise:
+    - llm orchestration
+    - mcp
+  allowed_locations:
+    - Remote
+    - United States
+    - Morocco
+    - Europe
+  latest_start_date: 2026-06-01
+
+penalties:
+  missing_price: 0.25
+  missing_expertise: 0.20
+  missing_location: 0.10
+  missing_availability: 0.20
+
+report:
+  top_n: 3
+  require_human_approval: true

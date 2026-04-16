@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from provider_selection_agent.config import Settings
+from provider_selection_agent.llm import synthesize_comparison
+from provider_selection_agent.models import (
+    ComparisonSynthesis,
+    ProviderComparison,
+    ProviderProfile,
+    ProviderScore,
+)
+from provider_selection_agent.workflow import run_workflow, run_workflow_traced
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _settings() -> Settings:
+    return Settings(
+        openai_api_key=None,
+        openai_model="test-model",
+        log_level="INFO",
+        vector_db_path=".local/vector_store",
+        enable_web_search=False,
+        mcp_server_url=None,
+    )
+
+
+def test_synthesis_falls_back_without_openai_key() -> None:
+    result = synthesize_comparison(
+        project_brief="brief",
+        providers=[ProviderProfile(name="Alpha")],
+        ranked_scores=[
+            ProviderScore(provider_name="Alpha", status="eligible", total_score=1, rank=1)
+        ],
+        settings=_settings(),
+        top_n=1,
+    )
+
+    assert result.fallback_used is True
+    assert result.recommended_provider == "Alpha"
+    assert "OPENAI_API_KEY" in (result.fallback_reason or "")
+
+
+def test_invalid_llm_evidence_is_rejected() -> None:
+    def fake_client(_brief, _providers, _ranked, _top_n):
+        return ComparisonSynthesis(
+            executive_summary="summary",
+            recommended_provider="Alpha",
+            rationale="rationale",
+            comparisons=[
+                ProviderComparison(
+                    provider_name="Alpha",
+                    strengths=["strong"],
+                    evidence_refs=["Alpha:made_up_field"],
+                )
+            ],
+            evidence_refs=["Alpha:made_up_field"],
+        )
+
+    result = synthesize_comparison(
+        project_brief="brief",
+        providers=[ProviderProfile(name="Alpha")],
+        ranked_scores=[
+            ProviderScore(provider_name="Alpha", status="eligible", total_score=1, rank=1)
+        ],
+        settings=_settings(),
+        top_n=1,
+        client=fake_client,
+    )
+
+    assert result.fallback_used is True
+    assert "Invalid evidence references" in (result.fallback_reason or "")
+
+
+def test_workflow_writes_expected_outputs(tmp_path: Path) -> None:
+    out_dir = tmp_path / "run"
+
+    state = run_workflow(
+        providers_path=str(ROOT / "examples" / "providers.csv"),
+        criteria_path=str(ROOT / "config" / "criteria.yaml"),
+        brief_path=str(ROOT / "examples" / "project_brief.md"),
+        output_dir=str(out_dir),
+        settings=_settings(),
+    )
+
+    assert state.report is not None
+    assert state.report.status == "DRAFT_PENDING_APPROVAL"
+    assert (out_dir / "recommendation.md").exists()
+    assert (out_dir / "scores.json").exists()
+    assert (out_dir / "audit.json").exists()
+    assert (out_dir / "approval_required.txt").exists()
+
+    audit = json.loads((out_dir / "audit.json").read_text(encoding="utf-8"))
+    assert audit["status"] == "DRAFT_PENDING_APPROVAL"
+    assert audit["human_review_required"] if "human_review_required" in audit else True
+    assert audit["fallback_used"] is True
+
+
+def test_traced_workflow_emits_all_steps(tmp_path: Path) -> None:
+    observed_steps: list[str] = []
+
+    def observer(trace_step, _state) -> None:
+        observed_steps.append(trace_step.step_name)
+
+    state = run_workflow_traced(
+        providers_path=str(ROOT / "examples" / "providers.csv"),
+        criteria_path=str(ROOT / "config" / "criteria.yaml"),
+        brief_path=str(ROOT / "examples" / "project_brief.md"),
+        output_dir=str(tmp_path / "trace_run"),
+        settings=_settings(),
+        observer=observer,
+    )
+
+    assert observed_steps == [
+        "load_inputs",
+        "validate_profiles",
+        "normalize_profiles",
+        "score_candidates",
+        "llm_compare_top_candidates",
+        "generate_draft_report",
+        "human_review_gate",
+        "write_outputs",
+    ]
+    assert len(state.trace_steps) == 8

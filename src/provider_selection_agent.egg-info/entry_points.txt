@@ -1,0 +1,2 @@
+[console_scripts]
+compare-providers = provider_selection_agent.cli:app
