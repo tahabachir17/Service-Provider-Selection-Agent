@@ -1,0 +1,41 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: provider-selection-agent:latest
+    env_file:
+      - .env
+    volumes:
+      - ./reports:/app/reports
+      - ./.local:/app/.local
+    command:
+      - --providers
+      - examples/providers.csv
+      - --criteria
+      - config/criteria.yaml
+      - --brief
+      - examples/project_brief.md
+      - --out
+      - reports/docker_run
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: provider-selection-agent:latest
+    env_file:
+      - .env
+    volumes:
+      - ./reports:/app/reports
+      - ./.local:/app/.local
+    ports:
+      - "8501:8501"
+    entrypoint:
+      - python
+      - -m
+      - streamlit
+      - run
+      - src/provider_selection_agent/streamlit_app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501

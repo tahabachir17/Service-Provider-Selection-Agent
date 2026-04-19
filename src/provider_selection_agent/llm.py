@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from typing import Any, cast
 
 from pydantic import SecretStr
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -35,11 +36,14 @@ def synthesize_comparison(
             providers,
         )
 
-    if not settings.openai_api_key:
-        return score_only_synthesis(ranked_scores, reason="OPENAI_API_KEY is not configured")
+    if not settings.llm_api_key:
+        return score_only_synthesis(
+            ranked_scores,
+            reason=f"{settings.api_key_env_hint} is not configured",
+        )
 
     try:
-        synthesis = _call_openai_structured(
+        synthesis = _call_llm_structured(
             project_brief,
             providers,
             ranked_scores,
@@ -83,7 +87,7 @@ def score_only_synthesis(ranked_scores: list[ProviderScore], *, reason: str) -> 
 
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=4))
-def _call_openai_structured(
+def _call_llm_structured(
     project_brief: str,
     providers: list[ProviderProfile],
     ranked_scores: list[ProviderScore],
@@ -92,15 +96,32 @@ def _call_openai_structured(
 ) -> ComparisonSynthesis:
     from langchain_openai import ChatOpenAI
 
-    api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY is not configured")
+    if settings.llm_provider == "gemini":
+        api_key = settings.llm_api_key or os.getenv("LLM_API_KEY") or os.getenv("GEMINI_API_KEY")
+    elif settings.llm_provider == "groq":
+        api_key = settings.llm_api_key or os.getenv("LLM_API_KEY") or os.getenv("GROQ_API_KEY")
+    else:
+        api_key = settings.llm_api_key or os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
 
-    model = ChatOpenAI(
-        model=settings.openai_model,
-        api_key=SecretStr(api_key),
-        temperature=0,
-    ).with_structured_output(ComparisonSynthesis)
+    if not api_key:
+        raise ValueError(f"{settings.api_key_env_hint} is not configured")
+
+    chat_model: Any
+    if settings.llm_base_url:
+        chat_model = ChatOpenAI(
+            model=settings.llm_model,
+            api_key=SecretStr(api_key),
+            temperature=0,
+            base_url=settings.llm_base_url,
+        )
+    else:
+        chat_model = ChatOpenAI(
+            model=settings.llm_model,
+            api_key=SecretStr(api_key),
+            temperature=0,
+        )
+
+    model = cast(Any, chat_model).with_structured_output(ComparisonSynthesis)
 
     provider_records = [provider.model_dump(mode="json") for provider in providers]
     score_records = [score.model_dump(mode="json") for score in ranked_scores[:top_n]]
@@ -109,7 +130,8 @@ def _call_openai_structured(
         "Use only the provided provider records and score records. "
         "Do not invent evidence. Numeric scores are final and cannot be changed. "
         "Every evidence reference must use '<provider name>:<field>' "
-        "or '<provider name>:score'.\n\n"
+        "or '<provider name>:score'. "
+        f"The configured LLM provider is '{settings.llm_provider}'.\n\n"
         f"Project brief:\n{project_brief}\n\n"
         f"Provider records:\n{provider_records}\n\n"
         f"Ranked scores:\n{score_records}\n"

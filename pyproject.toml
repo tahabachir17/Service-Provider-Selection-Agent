@@ -13,6 +13,8 @@ dependencies = [
     "langchain>=0.3.0",
     "langchain-openai>=0.2.0",
     "pydantic>=2.7",
+    "python-dotenv>=1.0",
+    "fastapi>=0.115",
     "typer>=0.12",
     "streamlit>=1.44",
     "pandas>=2.2",
@@ -21,6 +23,8 @@ dependencies = [
     "rich>=13.7",
     "tenacity>=8.3",
     "chromadb>=0.5",
+    "beautifulsoup4>=4.12",
+    "duckduckgo-search>=7.0",
 ]
 
 [project.optional-dependencies]

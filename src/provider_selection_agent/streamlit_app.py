@@ -8,12 +8,14 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 import streamlit as st
+from streamlit.runtime.uploaded_file_manager import UploadedFile
 
 SRC_ROOT = Path(__file__).resolve().parents[1]
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from provider_selection_agent.config import load_settings  # noqa: E402
+from provider_selection_agent.models import WorkflowState, WorkflowTraceStep  # noqa: E402
 from provider_selection_agent.workflow import run_workflow_traced  # noqa: E402
 
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -68,10 +70,11 @@ def main() -> None:
         settings = load_settings()
         st.divider()
         st.caption("Runtime")
-        st.write(f"Model: `{settings.openai_model}`")
+        st.write(f"Provider: `{settings.llm_provider}`")
+        st.write(f"Model: `{settings.llm_model}`")
         st.write(
             "LLM mode: "
-            + ("enabled" if settings.openai_api_key else "deterministic fallback only")
+            + ("enabled" if settings.llm_api_key else "deterministic fallback only")
         )
 
     left, right = st.columns([1.15, 0.85], gap="large")
@@ -134,9 +137,9 @@ def _run_with_trace(
     progress_bar = workflow_placeholder.progress(0, text="Starting workflow...")
     status_box = workflow_placeholder.empty()
     trace_box = workflow_placeholder.container()
-    node_count = 8
+    node_count = 9
 
-    def observer(trace_step, _state) -> None:
+    def observer(trace_step: WorkflowTraceStep, _state: WorkflowState) -> None:
         trace_steps.append(trace_step.model_dump(mode="json"))
         current = len(trace_steps)
         progress_bar.progress(
@@ -168,7 +171,11 @@ def _run_with_trace(
         status_box.error(f"Agent run failed: {exc}")
 
 
-def _render_results(result_placeholder, state, output_dir: Path) -> None:
+def _render_results(
+    result_placeholder: st.delta_generator.DeltaGenerator,
+    state: WorkflowState,
+    output_dir: Path,
+) -> None:
     report = state.report
     if report is None:
         result_placeholder.error("No report was generated.")
@@ -244,9 +251,9 @@ def _materialize_inputs(
     temp_root: Path,
     *,
     use_examples: bool,
-    uploaded_providers,
-    uploaded_criteria,
-    uploaded_brief,
+    uploaded_providers: UploadedFile | None,
+    uploaded_criteria: UploadedFile | None,
+    uploaded_brief: UploadedFile | None,
 ) -> tuple[Path, Path, Path]:
     if use_examples:
         return EXAMPLE_PROVIDERS, EXAMPLE_CRITERIA, EXAMPLE_BRIEF
@@ -272,7 +279,11 @@ def _preview_example_inputs() -> None:
         st.code(EXAMPLE_BRIEF.read_text(encoding="utf-8"), language="markdown")
 
 
-def _preview_uploaded_inputs(uploaded_providers, uploaded_criteria, uploaded_brief) -> None:
+def _preview_uploaded_inputs(
+    uploaded_providers: UploadedFile | None,
+    uploaded_criteria: UploadedFile | None,
+    uploaded_brief: UploadedFile | None,
+) -> None:
     tabs = st.tabs(["Providers", "Criteria", "Project Brief"])
     if uploaded_providers:
         with tabs[0]:

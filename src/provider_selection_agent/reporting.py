@@ -118,6 +118,7 @@ def _audit_payload(state: WorkflowState) -> dict[str, Any]:
         },
         "weights": criteria.normalized_weights,
         "hard_filters": criteria.hard_filters.model_dump(mode="json"),
+        "mcp_enrichment": state.audit.get("mcp_enrichment", {}),
         "ranked_scores": [score.model_dump(mode="json") for score in state.ranked_scores],
         "excluded_scores": [score.model_dump(mode="json") for score in state.excluded_scores],
         "llm_evidence_refs": report.synthesis.evidence_refs,

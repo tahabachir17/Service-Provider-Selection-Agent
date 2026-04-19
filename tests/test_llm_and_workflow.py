@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from provider_selection_agent.config import Settings
+from provider_selection_agent.config import (
+    GEMINI_OPENAI_BASE_URL,
+    GROQ_OPENAI_BASE_URL,
+    Settings,
+    load_settings,
+)
 from provider_selection_agent.llm import synthesize_comparison
 from provider_selection_agent.models import (
     ComparisonSynthesis,
@@ -18,12 +23,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _settings() -> Settings:
     return Settings(
-        openai_api_key=None,
-        openai_model="test-model",
+        llm_provider="openai",
+        llm_api_key=None,
+        llm_model="test-model",
+        llm_base_url=None,
         log_level="INFO",
         vector_db_path=".local/vector_store",
         enable_web_search=False,
         mcp_server_url=None,
+        mcp_enrich_fields=("price", "expertise", "location", "availability"),
+        mcp_timeout_seconds=120,
     )
 
 
@@ -117,10 +126,49 @@ def test_traced_workflow_emits_all_steps(tmp_path: Path) -> None:
         "load_inputs",
         "validate_profiles",
         "normalize_profiles",
+        "enrich_provider_data",
         "score_candidates",
         "llm_compare_top_candidates",
         "generate_draft_report",
         "human_review_gate",
         "write_outputs",
     ]
-    assert len(state.trace_steps) == 8
+    assert len(state.trace_steps) == 9
+
+
+def test_load_settings_supports_gemini_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+
+    settings = load_settings(load_env_file=False)
+
+    assert settings.llm_provider == "gemini"
+    assert settings.llm_api_key == "test-gemini-key"
+    assert settings.llm_model == "gemini-2.5-flash"
+    assert settings.llm_base_url == GEMINI_OPENAI_BASE_URL
+    assert settings.mcp_enrich_fields == ("price", "expertise", "location", "availability")
+    assert settings.mcp_timeout_seconds == 300
+
+
+def test_load_settings_supports_groq_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+
+    settings = load_settings(load_env_file=False)
+
+    assert settings.llm_provider == "groq"
+    assert settings.llm_api_key == "test-groq-key"
+    assert settings.llm_model == "openai/gpt-oss-20b"
+    assert settings.llm_base_url == GROQ_OPENAI_BASE_URL
+    assert settings.mcp_timeout_seconds == 300

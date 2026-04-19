@@ -8,13 +8,18 @@ Requires-Dist: langgraph>=0.2.60
 Requires-Dist: langchain>=0.3.0
 Requires-Dist: langchain-openai>=0.2.0
 Requires-Dist: pydantic>=2.7
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: fastapi>=0.115
 Requires-Dist: typer>=0.12
+Requires-Dist: streamlit>=1.44
 Requires-Dist: pandas>=2.2
 Requires-Dist: pyyaml>=6.0
 Requires-Dist: jinja2>=3.1
 Requires-Dist: rich>=13.7
 Requires-Dist: tenacity>=8.3
 Requires-Dist: chromadb>=0.5
+Requires-Dist: beautifulsoup4>=4.12
+Requires-Dist: duckduckgo-search>=7.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-cov>=5.0; extra == "dev"
@@ -35,23 +40,337 @@ compare-providers --providers examples/providers.csv --criteria config/criteria.
 
 The command writes:
 
-- `recommendation.md` - stakeholder-facing draft recommendation.
-- `scores.json` - ranked scores and component explanations.
-- `audit.json` - inputs, filters, weights, exclusions, and LLM evidence references.
-- `approval_required.txt` - explicit human approval checkpoint.
+- `recommendation.md` - stakeholder-facing draft recommendation
+- `scores.json` - ranked scores and component explanations
+- `audit.json` - inputs, filters, weights, exclusions, and LLM evidence references
+- `approval_required.txt` - explicit human approval checkpoint
 
-The agent works without `OPENAI_API_KEY`; in that mode it emits a deterministic score-only synthesis. With an API key, the LLM can summarize strengths, weaknesses, and tradeoffs, but it cannot change numeric scores.
+The agent works without an LLM API key; in that mode it emits a deterministic score-only synthesis. With a configured LLM provider, the model can summarize strengths, weaknesses, and tradeoffs, but it cannot change numeric scores.
+
+## Local Setup
+
+If `compare-providers` is not recognized in your terminal, the package entrypoint has not been installed into the current Python environment yet.
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+After that, either of these will work:
+
+```bash
+compare-providers --providers examples/providers.csv --criteria config/criteria.yaml --brief examples/project_brief.md --out reports/run_001
+python -m provider_selection_agent --providers examples/providers.csv --criteria config/criteria.yaml --brief examples/project_brief.md --out reports/run_001
+```
+
+## MCP-Powered Sourcing
+
+You can now source providers through the MCP bridge before ranking them.
+
+### 1. Start and set your MCP bridge
+
+Start the local bridge in a separate terminal:
+
+```bash
+python -m uvicorn provider_selection_agent.mcp_bridge:app --host 127.0.0.1 --port 8000
+```
+
+In `.env`:
+
+```bash
+MCP_SERVER_URL=http://127.0.0.1:8000/enrich
+ENABLE_WEB_SEARCH=true
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-2.5-flash
+MCP_TIMEOUT_SECONDS=120
+```
+
+The bridge can expose one HTTP endpoint and branch on `operation`.
+
+### 2. Discover providers from project context
+
+```bash
+python -m provider_selection_agent discover \
+  --context "We are building an EdTech marketplace focused on student tutoring and recorded courses. We need an agency or freelance team capable of building the platform backend architecture and integrating a robust search and recommendation system." \
+  --target-fields "Full-Stack Web Development" \
+  --target-fields "Data Architecture" \
+  --preferred-location "EMEA" \
+  --out reports/discovered_providers.json
+```
+
+This writes a `providers.json`-compatible file with:
+
+- `providers`: normalized provider records that can go straight into the compare workflow
+- `discovery_audit`: bridge metadata about the sourcing run
+
+### 3. Run comparison on discovered providers
+
+```bash
+python -m provider_selection_agent compare \
+  --providers reports/discovered_providers.json \
+  --criteria config/criteria.yaml \
+  --brief examples/project_brief.md \
+  --out reports/final_recommendation
+```
+
+## Streamlit UI
+
+Launch the visual interface:
+
+```bash
+streamlit run src/provider_selection_agent/streamlit_app.py
+```
+
+The app lets you:
+
+- use the bundled example files or upload your own inputs
+- run the agent from the browser
+- watch each workflow step as it executes
+- inspect the final recommendation, exclusions, and generated artifacts
+
+## Docker Deployment
+
+The project includes a Docker workflow for both the CLI and the Streamlit UI.
+
+### 1. Prepare environment variables
+
+```bash
+cp .env.example .env
+```
+
+If you do not set an LLM API key, the container still runs in deterministic fallback mode.
+
+### 2. Build the image
+
+```bash
+docker build -t provider-selection-agent .
+```
+
+### 3. Run the CLI in Docker
+
+```bash
+docker run --rm \
+  --env-file .env \
+  -v "$(pwd)/reports:/app/reports" \
+  -v "$(pwd)/.local:/app/.local" \
+  provider-selection-agent \
+  --providers examples/providers.csv \
+  --criteria config/criteria.yaml \
+  --brief examples/project_brief.md \
+  --out reports/docker_run
+```
+
+### 4. Run the Streamlit UI in Docker
+
+```bash
+docker compose up --build streamlit
+```
+
+Then open [http://localhost:8501](http://localhost:8501).
+
+### 5. Run the default CLI workflow with Docker Compose
+
+```bash
+docker compose up --build app
+```
+
+This uses the bundled example files and writes results to `reports/docker_run`.
+
+### Notes
+
+- `reports/` is mounted so generated recommendation files stay on your machine
+- `.local/` is mounted so local vector storage persists across container runs
+- the container listens on port `8501` for Streamlit
+- on Windows PowerShell, use `${PWD}` instead of `$(pwd)` if needed in `docker run` volume paths
 
 ## Environment
 
 See `.env.example`:
 
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`, default `gpt-4.1`
+- `LLM_PROVIDER`, either `openai`, `gemini`, or `groq`
+- `LLM_API_KEY`, provider-agnostic key slot
+- `LLM_MODEL`, default `gpt-4.1` for OpenAI, `gemini-2.5-flash` for Gemini, or `openai/gpt-oss-20b` for Groq when auto-detected
+- `LLM_BASE_URL`, optional override for OpenAI-compatible endpoints
+- `OPENAI_API_KEY`, backward-compatible OpenAI key slot
+- `GEMINI_API_KEY`, Gemini key slot
+- `GROQ_API_KEY`, Groq key slot
 - `LOG_LEVEL`, default `INFO`
 - `VECTOR_DB_PATH`, default `.local/vector_store`
 - `ENABLE_WEB_SEARCH`, default `false`
 - `MCP_SERVER_URL`, optional future connector endpoint
+- `MCP_ENRICH_FIELDS`, comma-separated fields to request from the MCP bridge
+
+`.env.example` stays in the repository as a safe template. `.env` is your local machine-specific file for secrets and overrides, and it should not be committed.
+
+## Gemini Setup
+
+This repository now supports Gemini for the LLM synthesis step by using Google's official OpenAI-compatible endpoint. That is the smallest reliable change for the current architecture because the repo does not yet execute MCP tool sessions directly.
+
+### Use Gemini in this project
+
+1. Create a Gemini API key in Google AI Studio.
+2. Copy `.env.example` to `.env`.
+3. Set these values:
+
+```bash
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key
+LLM_MODEL=gemini-2.5-flash
+LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+```
+
+For MCP sourcing, prefer `gemini-2.5-flash` over `gemini-2.5-pro`. It is cheaper, more available on free tiers, and the bridge now retries with `flash` automatically if a higher-tier Gemini model is quota-blocked.
+
+## Groq Setup
+
+Groq is supported through its official OpenAI-compatible API.
+
+Set these values in `.env`:
+
+```bash
+LLM_PROVIDER=groq
+GROQ_API_KEY=your_groq_api_key
+LLM_MODEL=openai/gpt-oss-20b
+LLM_BASE_URL=https://api.groq.com/openai/v1
+MCP_SERVER_URL=http://127.0.0.1:8000/enrich
+ENABLE_WEB_SEARCH=true
+MCP_TIMEOUT_SECONDS=120
+```
+
+The MCP bridge now supports Groq model fallback and will try lower-cost Groq models if your primary Groq model is unavailable or quota-limited.
+
+If live search scraping returns too few candidate URLs, the bridge also falls back to a small bootstrap list of provider domains so discovery can still proceed.
+
+4. Run the app normally:
+
+```bash
+compare-providers --providers examples/providers.csv --criteria config/criteria.yaml --brief examples/project_brief.md --out reports/run_gemini
+```
+
+Or with Docker:
+
+```bash
+docker compose up --build app
+```
+
+### What this means for MCP
+
+- Gemini itself supports MCP tool calling in the official Google Gen AI SDK
+- in this repository, `MCP_SERVER_URL` now points to an HTTP MCP bridge or enrichment gateway that can return field-level updates with evidence
+- the workflow calls that bridge before scoring, applies validated field updates, and records the result in `audit.json`
+- the workflow still falls back safely if the connector is unavailable or returns invalid data
+
+### Recommended next step if you want full MCP
+
+Implement a new workflow node between `load_inputs` and `score_candidates` that:
+
+1. connects to an MCP server or MCP-to-HTTP bridge
+2. asks Gemini which tools or resources to use for missing provider fields
+3. stores extracted values plus source URLs
+4. updates provider records only when evidence is returned
+5. records every enrichment action in `audit.json`
+
+### Expected MCP bridge payload
+
+Request:
+
+```json
+{
+  "providers": [
+    {
+      "name": "Alpha",
+      "price": null,
+      "expertise": "unknown"
+    }
+  ],
+  "wanted_fields": ["price", "expertise"],
+  "web_search_enabled": true,
+  "llm": {
+    "provider": "gemini",
+    "model": "gemini-2.5-flash",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "providers": [
+    {
+      "name": "Alpha",
+      "fields": {
+        "price": 1200,
+        "expertise": "MLOps and LLM systems"
+      },
+      "evidence": [
+        {
+          "field": "price",
+          "source": "https://example.com/pricing",
+          "summary": "Public pricing page"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Provider discovery payload
+
+Request:
+
+```json
+{
+  "operation": "discover_providers",
+  "project_context": "EdTech marketplace for tutoring and recorded courses",
+  "target_fields": ["Full-Stack Web Development", "Data Architecture"],
+  "preferred_location": "EMEA",
+  "remote_ok": true,
+  "max_results": 5,
+  "strict_rules": {
+    "zero_hallucination": true,
+    "no_directories": true,
+    "limit": 5
+  },
+  "web_search_enabled": true,
+  "llm": {
+    "provider": "gemini",
+    "model": "gemini-2.5-flash",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "providers": [
+    {
+      "name": "Example Labs",
+      "type": "Agency",
+      "expertise": ["Full-Stack Web Development", "Data Architecture"],
+      "location": "Warsaw, Poland",
+      "price": 120,
+      "currency": "USD",
+      "portfolio_summary": "Built marketplaces and discovery systems.",
+      "source_type": "provider_site",
+      "relevance_rationale": "Strong match for marketplace backend and search work.",
+      "evidence": [
+        {
+          "field": "price",
+          "source": "https://example.com/pricing"
+        },
+        {
+          "field": "location",
+          "source": "https://example.com/about"
+        }
+      ]
+    }
+  ],
+  "search_summary": "5 relevant provider sites searched; 3 strong matches found."
+}
+```
 
 ## Architecture
 
@@ -70,7 +389,7 @@ flowchart TD
 
 ## Input Files
 
-Provider files may be CSV or JSON. Required columns/keys:
+Provider files may be CSV or JSON. Required columns or keys:
 
 `name`, `type`, `price`, `currency`, `expertise`, `location`, `availability`, `portfolio_summary`, `references`, `notes`
 
@@ -78,12 +397,12 @@ The criteria YAML controls weights, hard filters, scoring penalties, and report 
 
 ## Guardrails
 
-- Hard filters are deterministic and explicit.
-- Scoring is calculated outside the LLM.
-- LLM output must match a Pydantic schema.
-- Referenced evidence must come from provider fields or the synthesis is discarded.
-- Tool or LLM failure falls back to a score-only draft.
-- Every report is marked `DRAFT_PENDING_APPROVAL`.
+- hard filters are deterministic and explicit
+- scoring is calculated outside the LLM
+- LLM output must match a Pydantic schema
+- referenced evidence must come from provider fields or the synthesis is discarded
+- tool or LLM failure falls back to a score-only draft
+- every report is marked `DRAFT_PENDING_APPROVAL`
 
 ## Development
 

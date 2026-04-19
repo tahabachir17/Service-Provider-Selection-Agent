@@ -1,15 +1,19 @@
 README.md
 pyproject.toml
 src/provider_selection_agent/__init__.py
+src/provider_selection_agent/__main__.py
 src/provider_selection_agent/cli.py
 src/provider_selection_agent/config.py
 src/provider_selection_agent/llm.py
 src/provider_selection_agent/loaders.py
 src/provider_selection_agent/mcp.py
+src/provider_selection_agent/mcp_bridge.py
 src/provider_selection_agent/memory.py
 src/provider_selection_agent/models.py
 src/provider_selection_agent/reporting.py
 src/provider_selection_agent/scoring.py
+src/provider_selection_agent/sourcing.py
+src/provider_selection_agent/streamlit_app.py
 src/provider_selection_agent/workflow.py
 src/provider_selection_agent.egg-info/PKG-INFO
 src/provider_selection_agent.egg-info/SOURCES.txt
@@ -19,3 +23,6 @@ src/provider_selection_agent.egg-info/requires.txt
 src/provider_selection_agent.egg-info/top_level.txt
 tests/test_llm_and_workflow.py
 tests/test_loading_and_scoring.py
+tests/test_mcp.py
+tests/test_mcp_bridge.py
+tests/test_sourcing.py

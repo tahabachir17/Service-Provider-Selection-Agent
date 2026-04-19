@@ -37,6 +37,16 @@ class ProviderProfile(BaseModel):
             return None
         return float(value)
 
+    @field_validator("expertise", mode="before")
+    @classmethod
+    def parse_expertise(cls, value: Any) -> str:
+        if value in (None, "", "unknown"):
+            return "unknown"
+        if isinstance(value, list):
+            cleaned = [str(item).strip() for item in value if str(item).strip()]
+            return ", ".join(cleaned) if cleaned else "unknown"
+        return str(value)
+
     @field_validator("availability", mode="before")
     @classmethod
     def parse_availability(cls, value: Any) -> date | None:

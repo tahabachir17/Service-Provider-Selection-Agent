@@ -6,6 +6,7 @@ from typing import Any, cast
 from provider_selection_agent.config import Settings
 from provider_selection_agent.llm import SynthesisClient, synthesize_comparison
 from provider_selection_agent.loaders import load_brief, load_criteria, load_providers
+from provider_selection_agent.mcp import MCPConnectorConfig, MCPProviderEnrichmentClient
 from provider_selection_agent.models import (
     RecommendationReport,
     WorkflowState,
@@ -58,6 +59,7 @@ def run_workflow_traced(
         ("load_inputs", _load_inputs),
         ("validate_profiles", _validate_profiles),
         ("normalize_profiles", _normalize_profiles),
+        ("enrich_provider_data", lambda raw_state: _enrich_provider_data(raw_state, settings)),
         ("score_candidates", _score_candidates),
         (
             "llm_compare_top_candidates",
@@ -88,6 +90,7 @@ def _build_graph(settings: Settings, synthesis_client: SynthesisClient | None) -
         ("load_inputs", _load_inputs),
         ("validate_profiles", _validate_profiles),
         ("normalize_profiles", _normalize_profiles),
+        ("enrich_provider_data", lambda state: _enrich_provider_data(state, settings)),
         ("score_candidates", _score_candidates),
         (
             "llm_compare_top_candidates",
@@ -156,6 +159,22 @@ def _score_candidates(raw_state: StateDict) -> StateDict:
     state.ranked_scores, state.excluded_scores = score_providers(state.providers, state.criteria)
     state.audit["eligible_count"] = len(state.ranked_scores)
     state.audit["excluded_count"] = len(state.excluded_scores)
+    return state.model_dump(mode="json")
+
+
+def _enrich_provider_data(raw_state: StateDict, settings: Settings) -> StateDict:
+    state = WorkflowState.model_validate(raw_state)
+    client = MCPProviderEnrichmentClient(MCPConnectorConfig.from_settings(settings))
+    try:
+        state.providers, enrichment_audit = client.enrich_providers(state.providers)
+    except Exception as exc:
+        enrichment_audit = {
+            "attempted": True,
+            "failed": True,
+            "reason": str(exc),
+            "applied_updates": [],
+        }
+    state.audit["mcp_enrichment"] = enrichment_audit
     return state.model_dump(mode="json")
 
 
@@ -256,6 +275,27 @@ def _trace_step_for(step_name: str, state: WorkflowState) -> WorkflowTraceStep:
                     }
                     for score in state.excluded_scores
                 ],
+            },
+        )
+    if step_name == "enrich_provider_data":
+        enrichment = state.audit.get("mcp_enrichment", {})
+        return WorkflowTraceStep(
+            step_name=step_name,
+            title="Enrich Provider Data",
+            details=(
+                "Fetched provider field updates from the MCP connector."
+                if enrichment.get("attempted") and not enrichment.get("failed")
+                else (
+                    "Skipped MCP enrichment because no connector was configured."
+                    if not enrichment.get("attempted")
+                    else "MCP enrichment failed and the workflow continued with original data."
+                )
+            ),
+            snapshot={
+                "attempted": enrichment.get("attempted", False),
+                "failed": enrichment.get("failed", False),
+                "updated_provider_count": enrichment.get("updated_provider_count", 0),
+                "wanted_fields": enrichment.get("wanted_fields", []),
             },
         )
     if step_name == "llm_compare_top_candidates":
