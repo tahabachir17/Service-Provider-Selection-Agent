@@ -16,6 +16,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from provider_selection_agent.config import load_settings  # noqa: E402
 from provider_selection_agent.models import WorkflowState, WorkflowTraceStep  # noqa: E402
+from provider_selection_agent.sourcing import (  # noqa: E402
+    discover_providers_via_mcp,
+    write_discovery_output,
+)
 from provider_selection_agent.workflow import run_workflow_traced  # noqa: E402
 
 APP_ROOT = Path(__file__).resolve().parents[2]
@@ -42,10 +46,12 @@ def main() -> None:
     with st.sidebar:
         st.subheader("Run Setup")
         use_examples = st.toggle("Use bundled example files", value=True)
+        discover_via_mcp = st.toggle("Discover providers via MCP", value=False)
+        uploaded_providers_disabled = use_examples or discover_via_mcp
         uploaded_providers = st.file_uploader(
             "Providers CSV or JSON",
             type=["csv", "json"],
-            disabled=use_examples,
+            disabled=uploaded_providers_disabled,
         )
         uploaded_criteria = st.file_uploader(
             "Criteria YAML",
@@ -57,6 +63,36 @@ def main() -> None:
             type=["md", "txt"],
             disabled=use_examples,
         )
+        if discover_via_mcp:
+            st.divider()
+            st.caption("MCP Discovery")
+            discovery_context = st.text_area(
+                "Project context",
+                value=(
+                    "We are looking for a service provider that fits the project needs "
+                    "described in the brief and can support delivery successfully."
+                ),
+                height=140,
+            )
+            discovery_target_fields = st.text_input(
+                "Target fields",
+                value="Full-Stack Web Development, Data Architecture",
+                help="Enter a comma-separated list of service capabilities to source for.",
+            )
+            discovery_preferred_location = st.text_input(
+                "Preferred location",
+                value="EMEA",
+            )
+            discovery_remote_ok = st.checkbox(
+                "Allow remote providers outside the preferred location",
+                value=True,
+            )
+            discovery_max_results = st.slider(
+                "Providers to discover",
+                min_value=1,
+                max_value=10,
+                value=5,
+            )
         output_name = st.text_input(
             "Output folder name",
             value=f"streamlit_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
@@ -81,7 +117,18 @@ def main() -> None:
 
     with left:
         st.subheader("Inputs")
-        if use_examples:
+        if discover_via_mcp:
+            _preview_discovery_inputs(
+                use_examples=use_examples,
+                uploaded_criteria=uploaded_criteria,
+                uploaded_brief=uploaded_brief,
+                project_context=discovery_context,
+                target_fields=discovery_target_fields,
+                preferred_location=discovery_preferred_location,
+                remote_ok=discovery_remote_ok,
+                max_results=discovery_max_results,
+            )
+        elif use_examples:
             st.success("Using bundled example files.")
             _preview_example_inputs()
         else:
@@ -94,26 +141,61 @@ def main() -> None:
 
     if not run_clicked:
         with workflow_placeholder:
-            st.info("Choose inputs and click Run Agent to watch the workflow execute.")
+            st.info(
+                "Choose inputs and click Run Agent to watch the workflow execute."
+                if not discover_via_mcp
+                else "Configure the MCP discovery request and click Run Agent to source and rank providers."
+            )
         return
 
-    if not use_examples and not all([uploaded_providers, uploaded_criteria, uploaded_brief]):
+    if discover_via_mcp:
+        if not discovery_context.strip():
+            with workflow_placeholder:
+                st.error("Provide project context before running MCP discovery.")
+            return
+        if not _parse_target_fields(discovery_target_fields):
+            with workflow_placeholder:
+                st.error("Provide at least one target field for MCP discovery.")
+            return
+    elif not use_examples and not all([uploaded_providers, uploaded_criteria, uploaded_brief]):
         with workflow_placeholder:
             st.error("Upload providers, criteria, and brief files before running the agent.")
         return
 
+    if not use_examples and not all([uploaded_criteria, uploaded_brief]):
+        with workflow_placeholder:
+            st.error("Upload criteria and brief files before running the agent.")
+        return
+
     output_dir = REPORTS_ROOT / output_name
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     with TemporaryDirectory() as temp_dir:
         temp_root = Path(temp_dir)
-        providers_path, criteria_path, brief_path = _materialize_inputs(
+        criteria_path, brief_path = _materialize_non_provider_inputs(
             temp_root,
             use_examples=use_examples,
-            uploaded_providers=uploaded_providers,
             uploaded_criteria=uploaded_criteria,
             uploaded_brief=uploaded_brief,
         )
+        if discover_via_mcp:
+            providers_path = _discover_providers_for_run(
+                workflow_placeholder=workflow_placeholder,
+                output_dir=output_dir,
+                project_context=discovery_context,
+                target_fields=_parse_target_fields(discovery_target_fields),
+                preferred_location=discovery_preferred_location,
+                remote_ok=discovery_remote_ok,
+                max_results=discovery_max_results,
+            )
+            if providers_path is None:
+                return
+        else:
+            providers_path = _materialize_uploaded_providers(
+                temp_root,
+                use_examples=use_examples,
+                uploaded_providers=uploaded_providers,
+            )
         _run_with_trace(
             workflow_placeholder=workflow_placeholder,
             result_placeholder=result_placeholder,
@@ -228,15 +310,15 @@ def _render_results(
             st.caption("No providers were excluded.")
 
         st.markdown("#### Generated Files")
-        artifact_tabs = st.tabs(
-            ["recommendation.md", "scores.json", "audit.json", "approval_required.txt"]
-        )
         filenames = [
             "recommendation.md",
             "scores.json",
             "audit.json",
             "approval_required.txt",
         ]
+        if (output_dir / "discovered_providers.json").exists():
+            filenames.append("discovered_providers.json")
+        artifact_tabs = st.tabs(filenames)
         for tab, filename in zip(artifact_tabs, filenames, strict=True):
             path = output_dir / filename
             content = path.read_text(encoding="utf-8")
@@ -245,26 +327,93 @@ def _render_results(
                     st.json(json.loads(content))
                 else:
                     st.code(content, language="markdown")
+def _materialize_non_provider_inputs(
+    temp_root: Path,
+    *,
+    use_examples: bool,
+    uploaded_criteria: UploadedFile | None,
+    uploaded_brief: UploadedFile | None,
+) -> tuple[Path, Path]:
+    if use_examples:
+        return EXAMPLE_CRITERIA, EXAMPLE_BRIEF
+
+    criteria_path = temp_root / uploaded_criteria.name
+    brief_path = temp_root / uploaded_brief.name
+    criteria_path.write_bytes(uploaded_criteria.getvalue())
+    brief_path.write_bytes(uploaded_brief.getvalue())
+    return criteria_path, brief_path
 
 
-def _materialize_inputs(
+def _materialize_uploaded_providers(
     temp_root: Path,
     *,
     use_examples: bool,
     uploaded_providers: UploadedFile | None,
-    uploaded_criteria: UploadedFile | None,
-    uploaded_brief: UploadedFile | None,
-) -> tuple[Path, Path, Path]:
+) -> Path:
     if use_examples:
-        return EXAMPLE_PROVIDERS, EXAMPLE_CRITERIA, EXAMPLE_BRIEF
+        return EXAMPLE_PROVIDERS
 
     providers_path = temp_root / uploaded_providers.name
-    criteria_path = temp_root / uploaded_criteria.name
-    brief_path = temp_root / uploaded_brief.name
     providers_path.write_bytes(uploaded_providers.getvalue())
-    criteria_path.write_bytes(uploaded_criteria.getvalue())
-    brief_path.write_bytes(uploaded_brief.getvalue())
-    return providers_path, criteria_path, brief_path
+    return providers_path
+
+
+def _discover_providers_for_run(
+    *,
+    workflow_placeholder: st.delta_generator.DeltaGenerator,
+    output_dir: Path,
+    project_context: str,
+    target_fields: list[str],
+    preferred_location: str,
+    remote_ok: bool,
+    max_results: int,
+) -> Path | None:
+    settings = load_settings()
+    status_box = workflow_placeholder.empty()
+    try:
+        status_box.info("Running MCP provider discovery...")
+        profiles, audit = discover_providers_via_mcp(
+            project_context=project_context,
+            target_fields=target_fields,
+            preferred_location=preferred_location,
+            remote_ok=remote_ok,
+            max_results=max_results,
+            settings=settings,
+        )
+    except Exception as exc:
+        status_box.error(f"MCP discovery failed: {exc}")
+        return None
+
+    if not profiles:
+        status_box.error("MCP discovery completed but returned no providers.")
+        return None
+
+    providers_path = write_discovery_output(
+        output_path=output_dir / "discovered_providers.json",
+        profiles=profiles,
+        audit=audit,
+    )
+    status_box.success(
+        f"MCP discovery found {len(profiles)} providers. Proceeding to ranking workflow."
+    )
+    with workflow_placeholder.expander("Discovered Providers", expanded=False):
+        st.write(audit.get("search_summary") or "No search summary returned.")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Name": profile.name,
+                        "Type": profile.type,
+                        "Expertise": profile.expertise,
+                        "Location": profile.location,
+                    }
+                    for profile in profiles
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    return providers_path
 
 
 def _preview_example_inputs() -> None:
@@ -308,6 +457,55 @@ def _preview_uploaded_inputs(
     else:
         with tabs[2]:
             st.caption("Upload a brief file to preview it.")
+
+
+def _preview_discovery_inputs(
+    *,
+    use_examples: bool,
+    uploaded_criteria: UploadedFile | None,
+    uploaded_brief: UploadedFile | None,
+    project_context: str,
+    target_fields: str,
+    preferred_location: str,
+    remote_ok: bool,
+    max_results: int,
+) -> None:
+    st.info("Providers will be sourced live through the MCP bridge for this run.")
+    tabs = st.tabs(["Discovery Request", "Criteria", "Project Brief"])
+    with tabs[0]:
+        st.json(
+            {
+                "project_context": project_context,
+                "target_fields": _parse_target_fields(target_fields),
+                "preferred_location": preferred_location,
+                "remote_ok": remote_ok,
+                "max_results": max_results,
+            }
+        )
+    if use_examples:
+        with tabs[1]:
+            st.code(EXAMPLE_CRITERIA.read_text(encoding="utf-8"), language="yaml")
+        with tabs[2]:
+            st.code(EXAMPLE_BRIEF.read_text(encoding="utf-8"), language="markdown")
+        return
+
+    if uploaded_criteria:
+        with tabs[1]:
+            st.code(uploaded_criteria.getvalue().decode("utf-8"), language="yaml")
+    else:
+        with tabs[1]:
+            st.caption("Upload a criteria file to preview it.")
+
+    if uploaded_brief:
+        with tabs[2]:
+            st.code(uploaded_brief.getvalue().decode("utf-8"), language="markdown")
+    else:
+        with tabs[2]:
+            st.caption("Upload a brief file to preview it.")
+
+
+def _parse_target_fields(raw_value: str) -> list[str]:
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 
 def _inject_styles() -> None:
